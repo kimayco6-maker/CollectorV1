@@ -89,6 +89,49 @@ def health():
     return jsonify({"status": "ok"})
 
 
+@app.get("/drive-check")
+def drive_check():
+    try:
+        if not GOOGLE_DRIVE_FOLDER_ID:
+            return jsonify({"error": "Missing GOOGLE_DRIVE_FOLDER_ID"}), 500
+        service = build_drive_service()
+        info = service.files().get(
+            fileId=GOOGLE_DRIVE_FOLDER_ID,
+            fields="id,name,driveId,parents",
+            supportsAllDrives=True,
+        ).execute()
+        return jsonify({
+            "status": "ok",
+            "folder": info,
+        }), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.post("/drive-test")
+def drive_test():
+    try:
+        if not GOOGLE_DRIVE_FOLDER_ID:
+            return jsonify({"error": "Missing GOOGLE_DRIVE_FOLDER_ID"}), 500
+        service = build_drive_service()
+        # Create a tiny test file in the target folder
+        content = io.BytesIO(b"drive test ok\n")
+        media = MediaIoBaseUpload(content, mimetype="text/plain", resumable=False)
+        metadata = {
+            "name": "collector_test.txt",
+            "parents": [GOOGLE_DRIVE_FOLDER_ID],
+        }
+        uploaded = service.files().create(
+            body=metadata,
+            media_body=media,
+            fields="id,name,parents",
+            supportsAllDrives=True,
+        ).execute()
+        return jsonify({"status": "ok", "uploaded": uploaded}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.post("/store-data")
 def store_data():
     try:
