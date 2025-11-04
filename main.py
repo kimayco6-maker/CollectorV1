@@ -1,84 +1,86 @@
-*** Begin Patch
-*** Update File: main.py
-@@
--from fastapi.responses import JSONResponse
-+from fastapi.responses import JSONResponse, HTMLResponse
-@@
- @app.get("/health")
- def health():
-     return {"status": "ok"}
- 
- 
-+@app.get("/", response_class=HTMLResponse)
-+def index():
-+    return """
-+<!doctype html>
-+<html lang=\"en\">
-+<head>
-+  <meta charset=\"utf-8\" />
-+  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
-+  <title>Drive Uploader</title>
-+  <style>
-+    body { font-family: system-ui, Arial, sans-serif; margin: 2rem; }
-+    form { border: 1px solid #e5e7eb; padding: 1rem; border-radius: 8px; max-width: 720px; }
-+    .row { margin-bottom: .75rem; }
-+    input[type=file] { width: 100%; }
-+    code { background: #f3f4f6; padding: .15rem .4rem; border-radius: 4px; }
-+    pre { background: #0b1020; color: #d1d5db; padding: 1rem; border-radius: 8px; overflow:auto; }
-+    button { background: #2563eb; color: white; border: 0; padding: .6rem 1rem; border-radius: 6px; cursor: pointer; }
-+    button:disabled { opacity: .6; cursor: not-allowed; }
-+    label { display:block; font-weight:600; margin-bottom:.25rem }
-+  </style>
-+  <script>
-+    async function doUpload(ev) {
-+      ev.preventDefault();
-+      const form = ev.target;
-+      const url = form.action;
-+      const fd = new FormData(form);
-+      const out = document.getElementById('output');
-+      out.textContent = 'Uploading...';
-+      try {
-+        const res = await fetch(url, { method: 'POST', body: fd });
-+        const txt = await res.text();
-+        out.textContent = txt;
-+      } catch (e) {
-+        out.textContent = 'Error: ' + (e && e.message ? e.message : e);
-+      }
-+    }
-+  </script>
-+  </head>
-+<body>
-+  <h1>Upload files to Google Drive</h1>
-+  <p>
-+    This page posts to <code>/upload</code>. Ensure your Render service has <code>GOOGLE_SERVICE_ACCOUNT_KEY</code> set
-+    and the target Drive folder shared with the service account. Optionally set a default <code>DRIVE_FOLDER_ID</code>.
-+  </p>
-+  <form method=\"post\" action=\"/upload\" enctype=\"multipart/form-data\" onsubmit=\"doUpload(event)\">
-+    <div class=\"row\">
-+      <label>Files</label>
-+      <input type=\"file\" name=\"files\" multiple required />
-+    </div>
-+    <div class=\"row\">
-+      <label>Folder ID (optional, overrides server default)</label>
-+      <input type=\"text\" name=\"folder_id\" placeholder=\"1xEQ5uQs...\" style=\"width:100%\" />
-+    </div>
-+    <div class=\"row\">
-+      <label>Conflict policy</label>
-+      <select name=\"conflict_policy\">
-+        <option value=\"rename\" selected>rename</option>
-+        <option value=\"overwrite\">overwrite</option>
-+        <option value=\"skip\">skip</option>
-+      </select>
-+    </div>
-+    <button type=\"submit\">Upload</button>
-+  </form>
-+  <h2>Response</h2>
-+  <pre id=\"output\"></pre>
-+</body>
-+</html>
-+"""
-+
-*** End PatchtById('output');
+import io
+import json
+import os
+from typing import List, Optional
+
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException
+from fastapi.responses import JSONResponse, HTMLResponse
+
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+from googleapiclient.http import MediaIoBaseUpload
+from google.oauth2.service_account import Credentials
+
+
+app = FastAPI(title="Drive API Uploader")
+
+
+def get_drive_service():
+    key_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_KEY")
+    if not key_json:
+        raise RuntimeError("Missing GOOGLE_SERVICE_ACCOUNT_KEY env var")
+    try:
+        info = json.loads(key_json)
+    except json.JSONDecodeError as e:
+        raise RuntimeError("GOOGLE_SERVICE_ACCOUNT_KEY is not valid JSON") from e
+    creds = Credentials.from_service_account_info(
+        info,
+        scopes=["https://www.googleapis.com/auth/drive"],
+    )
+    return build("drive", "v3", credentials=creds)
+
+
+def find_file_in_folder_by_name(drive, folder_id: str, name: str) -> Optional[str]:
+    def _q(s: str) -> str:
+        return s.replace("'", "\\'")
+    q = (
+        f"'{folder_id}' in parents and name = '{_q(name)}' and trashed = false "
+        "and mimeType != 'application/vnd.google-apps.folder'"
+    )
+    resp = drive.files().list(q=q, fields="files(id, name)", pageSize=10).execute()
+    files = resp.get("files", [])
+    return files[0]["id"] if files else None
+
+
+def generate_renamed_filename(original_name: str, attempt_index: int) -> str:
+    base, dot, ext = original_name.partition(".")
+    if attempt_index <= 0:
+        return original_name
+    return f"{original_name} ({attempt_index})" if not dot else f"{base} ({attempt_index}).{ext}"
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+
+@app.get("/", response_class=HTMLResponse)
+def index():
+    return """
+<!doctype html>
+<html lang=\"en\">
+<head>
+  <meta charset=\"utf-8\" />
+  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+  <title>Drive Uploader</title>
+  <style>
+    body { font-family: system-ui, Arial, sans-serif; margin: 2rem; }
+    form { border: 1px solid #e5e7eb; padding: 1rem; border-radius: 8px; max-width: 720px; }
+    .row { margin-bottom: .75rem; }
+    input[type=file] { width: 100%; }
+    code { background: #f3f4f6; padding: .15rem .4rem; border-radius: 4px; }
+    pre { background: #0b1020; color: #d1d5db; padding: 1rem; border-radius: 8px; overflow:auto; }
+    button { background: #2563eb; color: white; border: 0; padding: .6rem 1rem; border-radius: 6px; cursor: pointer; }
+    button:disabled { opacity: .6; cursor: not-allowed; }
+    label { display:block; font-weight:600; margin-bottom:.25rem }
+  </style>
+  <script>
+    async function doUpload(ev) {
+      ev.preventDefault();
+      const form = ev.target;
+      const url = form.action;
+      const fd = new FormData(form);
+      const out = document.getElementById('output');
       out.textContent = 'Uploading...';
       try {
         const res = await fetch(url, { method: 'POST', body: fd });
