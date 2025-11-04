@@ -37,12 +37,26 @@ def build_drive_service():
 
 
 def find_or_create_class_folder(service, parent_id: str, class_name: str) -> str:
+    # Detect if parent is in a shared drive (driveId present)
+    parent = service.files().get(fileId=parent_id, fields="id,name,driveId", supportsAllDrives=True).execute()
+    drive_id = parent.get("driveId")
+
     # Search for an existing folder with the same name under the parent
+    safe_name = class_name.replace("'", "\\'")
     query = (
         "mimeType='application/vnd.google-apps.folder' and trashed=false "
-        f"and name='{class_name.replace("'","\'")}' and '{parent_id}' in parents"
+        f"and name='{safe_name}' and '{parent_id}' in parents"
     )
-    res = service.files().list(q=query, spaces="drive", fields="files(id,name)").execute()
+    list_kwargs = {
+        "q": query,
+        "spaces": "drive",
+        "fields": "files(id,name)",
+        "supportsAllDrives": True,
+        "includeItemsFromAllDrives": True,
+    }
+    if drive_id:
+        list_kwargs.update({"corpora": "drive", "driveId": drive_id})
+    res = service.files().list(**list_kwargs).execute()
     files = res.get("files", [])
     if files:
         return files[0]["id"]
@@ -53,7 +67,7 @@ def find_or_create_class_folder(service, parent_id: str, class_name: str) -> str
         "mimeType": "application/vnd.google-apps.folder",
         "parents": [parent_id],
     }
-    folder = service.files().create(body=metadata, fields="id").execute()
+    folder = service.files().create(body=metadata, fields="id", supportsAllDrives=True).execute()
     return folder["id"]
 
 
@@ -104,7 +118,12 @@ def store_data():
 
         media = MediaIoBaseUpload(csv_bytes, mimetype="text/csv", resumable=False)
         metadata = {"name": filename, "parents": [class_folder_id]}
-        uploaded = service.files().create(body=metadata, media_body=media, fields="id,name,parents").execute()
+        uploaded = service.files().create(
+            body=metadata,
+            media_body=media,
+            fields="id,name,parents",
+            supportsAllDrives=True,
+        ).execute()
 
         return jsonify({
             "status": "ok",
